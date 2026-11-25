@@ -1,0 +1,429 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Параллельная загрузка пользователей</title>
+
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: #f6f7f9;
+            color: #202530;
+            font: 16px/1.5 system-ui, sans-serif;
+        }
+
+        main {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        h4 {
+            margin: 0 0 8px;
+            color: #64748b;
+            font-size: 14px;
+        }
+
+        h1 { margin: 0 0 8px; }
+
+        .description {
+            margin: 0 0 24px;
+            color: #64748b;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        button {
+            padding: 10px 16px;
+            border: 0;
+            border-radius: 8px;
+            background: #263449;
+            color: white;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        button:disabled {
+            opacity: .45;
+            cursor: not-allowed;
+        }
+
+        button:focus-visible, a:focus-visible {
+            outline: 3px solid #2563eb;
+            outline-offset: 3px;
+        }
+
+        #summary { display: block; }
+        #summary[data-state="loading"] { color: #475569; }
+        #summary[data-state="success"] { color: #166534; }
+
+        #summary[data-state="partial"],
+        #summary[data-state="error"] {
+            color: #9a3412;
+        }
+
+        #summary[data-state="aborted"] {
+            color: #6b21a8;
+        }
+
+        #users {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 16px;
+        }
+
+        article {
+            min-width: 0;
+            padding: 20px;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            background: white;
+        }
+
+        article[data-state="error"] {
+            border-color: #fca5a5;
+        }
+
+        article[data-state="aborted"] {
+            border-color: #c4b5fd;
+        }
+
+        .avatar {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
+        .name {
+            margin: 8px 0 12px;
+            font-size: 19px;
+        }
+
+        .detail {
+            margin: 7px 0;
+            overflow-wrap: anywhere;
+        }
+
+        .detail span { font-weight: 500; }
+
+        .message {
+            display: block;
+            overflow-wrap: anywhere;
+        }
+    </style>
+</head>
+
+<body>
+<main>
+    <h4 id="login">debikde</h4>
+    <h1>Каталог пользователей</h1>
+    <p class="description">
+        Параллельная загрузка данных из DummyJSON
+    </p>
+
+    <div class="controls">
+        <button id="cancel" type="button">
+            Отменить запросы
+        </button>
+
+        <output id="summary"
+                data-state="loading"
+                role="status"
+                aria-live="polite">
+            Загрузка...
+        </output>
+    </div>
+
+    <section id="users"
+             aria-label="Карточки пользователей"></section>
+</main>
+
+<script>
+    const summary = document.getElementById('summary');
+    const usersSection = document.getElementById('users');
+    const cancelButton = document.getElementById('cancel');
+
+    function updateSummary(state, message) {
+        summary.dataset.state = state;
+        summary.textContent = message;
+    }
+
+    function readParameters() {
+        const params = new URLSearchParams(location.search);
+
+        const rawIds = params.has('ids')
+            ? params.get('ids')
+            : '1,2,3';
+
+        const rawDelay = params.has('delay')
+            ? params.get('delay')
+            : '0';
+
+        const parts = rawIds.split(',');
+
+        const validIds =
+            parts.length >= 1 &&
+            parts.length <= 5 &&
+            parts.every(part => {
+                const id = Number(part);
+
+                return /^\d+$/.test(part) &&
+                    Number.isSafeInteger(id) &&
+                    id > 0;
+            });
+
+        if (!validIds) {
+            throw new Error(
+                'Параметр ids: укажите от 1 до 5 положительных целых чисел через запятую.'
+            );
+        }
+
+        const delay = Number(rawDelay);
+
+        if (
+            !/^\d+(?:\.\d+)?$/.test(rawDelay) ||
+            !Number.isFinite(delay) ||
+            delay > 5000
+        ) {
+            throw new Error(
+                'Параметр delay должен быть числом от 0 до 5000.'
+            );
+        }
+
+        return {
+            ids: parts.map(Number),
+            delay
+        };
+    }
+
+    async function fetchUser(id, delay, signal) {
+        const response = await fetch(
+            `https://dummyjson.com/users/${id}?delay=${delay}`,
+            { signal }
+        );
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        return await response.json();
+    }
+
+    function createTextElement(tag, className, text) {
+        const element = document.createElement(tag);
+        element.className = className;
+        element.textContent = String(text);
+        return element;
+    }
+
+    function createCard(id, state, data) {
+        const article = document.createElement('article');
+
+        article.dataset.id = String(id);
+        article.dataset.state = state;
+
+        if (state !== 'success') {
+            article.appendChild(
+                createTextElement('span', 'message', data)
+            );
+
+            return article;
+        }
+
+        if (data.image) {
+            const image = document.createElement('img');
+            image.className = 'avatar';
+            image.src = data.image;
+            image.alt = '';
+            image.loading = 'lazy';
+            article.appendChild(image);
+        }
+
+        article.appendChild(
+            createTextElement(
+                'h2',
+                'name',
+                `${data.firstName} ${data.lastName}`
+            )
+        );
+
+        const emailRow = createTextElement(
+            'p', 'detail', 'Почта: '
+        );
+
+        const email = createTextElement(
+            'a', 'email', data.email
+        );
+
+        email.href = `mailto:${data.email}`;
+        emailRow.appendChild(email);
+        article.appendChild(emailRow);
+
+        const cityRow = createTextElement(
+            'p', 'detail', 'Город: '
+        );
+
+        cityRow.appendChild(
+            createTextElement(
+                'span',
+                'city',
+                data.address?.city ?? 'Не указан'
+            )
+        );
+
+        article.appendChild(cityRow);
+
+        const companyRow = createTextElement(
+            'p', 'detail', 'Компания: '
+        );
+
+        companyRow.appendChild(
+            createTextElement(
+                'span',
+                'company',
+                data.company?.name ?? 'Не указана'
+            )
+        );
+
+        article.appendChild(companyRow);
+
+        return article;
+    }
+
+    async function start() {
+        let ids, delay;
+
+        try {
+            ({ ids, delay } = readParameters());
+        } catch (error) {
+            cancelButton.disabled = true;
+            updateSummary('error', error.message);
+            return;
+        }
+
+        const controller = new AbortController();
+
+        const completed = Array(ids.length).fill(false);
+        const cancelledIndexes = new Set();
+
+        let finished = false;
+
+        cancelButton.addEventListener('click', () => {
+            if (finished || controller.signal.aborted) return;
+
+            completed.forEach((isCompleted, index) => {
+                if (!isCompleted) {
+                    cancelledIndexes.add(index);
+                }
+            });
+
+            controller.abort();
+            cancelButton.disabled = true;
+
+            updateSummary('aborted', 'Отмена запросов...');
+        });
+
+        updateSummary(
+            'loading',
+            `Загрузка ${ids.length} пользователей...`
+        );
+
+        // Все запросы запускаются параллельно.
+        const requests = ids.map((id, index) => {
+            const request = fetchUser(
+                id,
+                delay,
+                controller.signal
+            );
+
+            request.then(
+                () => { completed[index] = true; },
+                () => { completed[index] = true; }
+            );
+
+            return request;
+        });
+
+        const results = await Promise.allSettled(requests);
+
+        const fragment = document.createDocumentFragment();
+
+        let successes = 0;
+        let errors = 0;
+        let aborted = 0;
+
+
+        results.forEach((result, index) => {
+            const id = ids[index];
+
+            if (
+                cancelledIndexes.has(index) ||
+                (
+                    result.status === 'rejected' &&
+                    result.reason?.name === 'AbortError'
+                )
+            ) {
+                aborted++;
+
+                fragment.appendChild(
+                    createCard(id, 'aborted', 'Запрос отменён')
+                );
+
+            } else if (result.status === 'fulfilled') {
+                successes++;
+
+                fragment.appendChild(
+                    createCard(id, 'success', result.value)
+                );
+
+            } else {
+                errors++;
+
+                fragment.appendChild(
+                    createCard(
+                        id,
+                        'error',
+                        result.reason?.message ?? 'Сетевая ошибка'
+                    )
+                );
+            }
+        });
+
+        usersSection.textContent = '';
+        usersSection.appendChild(fragment);
+
+        finished = true;
+        cancelButton.disabled = true;
+
+        const message =
+            `Загружено: ${successes}; ошибок: ${errors}`;
+
+        if (controller.signal.aborted) {
+            updateSummary(
+                'aborted',
+                `${message}; отменено: ${aborted}`
+            );
+        } else if (successes === ids.length) {
+            updateSummary('success', message);
+        } else if (successes > 0) {
+            updateSummary('partial', message);
+        } else {
+            updateSummary('error', message);
+        }
+    }
+
+    start();
+</script>
+</body>
+</html>
